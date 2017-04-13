@@ -177,6 +177,7 @@ To use this, use the following mode hook:
       (intero-mode))))
 
 (define-key intero-mode-map (kbd "C-c C-t") 'intero-type-at)
+(define-key intero-mode-map (kbd "C-?") 'intero-uses-at)
 (define-key intero-mode-map (kbd "C-c C-i") 'intero-info)
 (define-key intero-mode-map (kbd "M-.") 'intero-goto-definition)
 (define-key intero-mode-map (kbd "C-c C-l") 'intero-repl-load)
@@ -312,6 +313,35 @@ You can use this to kill them or look inside."
     (insert expression)
     (font-lock-ensure)
     (buffer-string)))
+
+(defun intero-uses-at ()
+  "Highlight uses of the identifier at point."
+  (interactive)
+  (let ((uses (split-string (apply #'intero-get-uses-at (intero-thing-at-point))
+                            "\n"
+                            t)))
+    (unless (null uses)
+      (intero-highlight-uses-mode)
+      (cl-loop
+       for use in uses
+       when (string-match
+             "\\(.*?\\):(\\([0-9]+\\),\\([0-9]+\\))-(\\([0-9]+\\),\\([0-9]+\\))$"
+             use)
+       do (let* ((fp (match-string 1 use))
+                 (sline (string-to-number (match-string 2 use)))
+                 (scol (string-to-number (match-string 3 use)))
+                 (eline (string-to-number (match-string 4 use)))
+                 (ecol (string-to-number (match-string 5 use))))
+            (when (string= fp (intero-temp-file-name))
+              (intero-highlight-uses-mode-highlight
+               (save-excursion (goto-char (point-min))
+                               (forward-line (1- sline))
+                               (forward-char (1- scol))
+                               (point))
+               (save-excursion (goto-char (point-min))
+                               (forward-line (1- eline))
+                               (forward-char (1- ecol))
+                               (point)))))))))
 
 (defun intero-type-at (insert)
   "Get the type of the thing or selection at point.
@@ -2605,6 +2635,96 @@ suggestions are available."
   "Display a warning message made from (format MESSAGE ARGS...).
 Equivalent to 'warn', but label the warning as coming from intero."
   (display-warning 'intero (apply 'format message args) :warning))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Intero highlight uses mode
+
+(defvar intero-highlight-uses-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "TAB") 'intero-highlight-uses-mode-next)
+    (define-key map (kbd "S-TAB") 'intero-highlight-uses-mode-prev)
+    (define-key map (kbd "<backtab>") 'intero-highlight-uses-mode-prev)
+    (define-key map (kbd "RET") 'intero-highlight-uses-mode-stop-here)
+    (define-key map (kbd "C-g") 'intero-highlight-uses-mode)
+    (define-key map (kbd "C-t") 'intero-highlight-uses-mode-replace)
+    map)
+  "Keymap for using `intero-highlight-uses-mode'.")
+
+(defvar intero-highlight-uses-mode-point nil)
+(make-variable-buffer-local 'intero-highlight-uses-mode-point)
+
+;;;###autoload
+(define-minor-mode intero-highlight-uses-mode
+  "Minor mode for highlighting and jumping between uses."
+  :lighter " Uses"
+  :keymap intero-highlight-uses-mode-map
+  (if intero-highlight-uses-mode
+      (setq intero-highlight-uses-mode-point (point))
+    (when intero-highlight-uses-mode-point
+      (goto-char intero-highlight-uses-mode-point)))
+  (remove-overlays (point-min) (point-max) 'intero-highlight-uses-mode-highlight t))
+
+(defun intero-highlight-uses-mode-replace ()
+  "Replace all highlighted instances in the buffer with something
+  else."
+  (interactive)
+  (save-excursion
+    (goto-char (point-min))
+    (let ((o (intero-highlight-uses-mode-next)))
+      (when o
+        (let ((replacement (read-from-minibuffer (format "Replace uses %s with: "
+                                                         (buffer-substring
+                                                          (overlay-start o)
+                                                          (overlay-end o))))))
+
+          (while o
+            (goto-char (overlay-start o))
+            (delete-region (overlay-start o)
+                           (overlay-end o))
+            (insert replacement)
+            (setq o (intero-highlight-uses-mode-next)))))))
+  (intero-highlight-uses-mode -1))
+
+(defun intero-highlight-uses-mode-stop-here ()
+  "Stop at this point."
+  (interactive)
+  (setq intero-highlight-uses-mode-point (point))
+  (intero-highlight-uses-mode -1))
+
+(defun intero-highlight-uses-mode-next ()
+  "Jump to next result."
+  (interactive)
+  (let ((os (sort (cl-remove-if (lambda (o)
+                                  (or (<= (overlay-start o) (point))
+                                      (not (overlay-get o 'intero-highlight-uses-mode-highlight))))
+                                (overlays-in (point) (point-max)))
+                  (lambda (a b)
+                    (< (overlay-start a)
+                       (overlay-start b))))))
+    (when os
+      (goto-char (overlay-start (car os)))
+      (car os))))
+
+(defun intero-highlight-uses-mode-prev ()
+  "Jump to previous result."
+  (interactive)
+  (let ((os (sort (cl-remove-if (lambda (o)
+                                  (or (>= (overlay-end o) (point))
+                                      (not (overlay-get o 'intero-highlight-uses-mode-highlight))))
+                                (overlays-in (point-min) (point)))
+                  (lambda (a b)
+                    (> (overlay-start a)
+                       (overlay-start b))))))
+    (when os
+      (goto-char (overlay-start (car os)))
+      (car os))))
+
+(defun intero-highlight-uses-mode-highlight (start end)
+  "Make a highlight overlay at the given span."
+  (let ((o (make-overlay start end)))
+    (overlay-put o 'priority 999)
+    (overlay-put o 'face 'isearch)
+    (overlay-put o 'intero-highlight-uses-mode-highlight t)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
